@@ -1,0 +1,160 @@
+<!--
+  Integrity Air — floating chat widget for WordPress.
+
+  HOW TO USE:
+  1. Set API_BASE below to your PUBLIC, HTTPS backend URL (where chatbot_api.py runs).
+     It MUST be https:// — a WordPress site served over https will block an http API
+     as "mixed content."
+  2. Copy this ENTIRE file (the <style> and <script> blocks).
+  3. In WordPress: install a footer-injection plugin (e.g. "WPCode" or "Insert Headers
+     and Footers"), and paste this into the FOOTER section, then Save.
+     Do NOT paste it into a post/page via the visual editor — WordPress strips <script>.
+  4. Reload your site; the chat bubble appears bottom-right on every page.
+
+  Everything is namespaced with `iacw-` so it won't collide with your theme's CSS.
+-->
+<style>
+  #iacw-launch {
+    position: fixed; right: 20px; bottom: 20px; z-index: 2147483000;
+    width: 60px; height: 60px; border-radius: 50%; border: none; cursor: pointer;
+    background: linear-gradient(135deg, #2f5fd0, #234aa3); color: #fff; font-size: 26px;
+    box-shadow: 0 6px 20px rgba(20,35,70,.3);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #iacw-panel {
+    position: fixed; right: 20px; bottom: 92px; z-index: 2147483000;
+    width: 370px; max-width: calc(100vw - 40px); height: 540px; max-height: calc(100vh - 120px);
+    background: #fff; border-radius: 16px; overflow: hidden; display: none;
+    flex-direction: column; box-shadow: 0 16px 48px rgba(20,35,70,.22);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  #iacw-panel.iacw-open { display: flex; }
+  .iacw-header { background: linear-gradient(135deg,#2f5fd0,#234aa3); color:#fff; padding:14px 16px;
+    display:flex; align-items:center; gap:10px; }
+  .iacw-header .iacw-av { width:36px; height:36px; border-radius:50%; background:rgba(255,255,255,.18);
+    display:flex; align-items:center; justify-content:center; font-size:18px; }
+  .iacw-header h4 { margin:0; font-size:15px; font-weight:600; line-height:1.2; }
+  .iacw-header .iacw-sub { font-size:11px; opacity:.85; }
+  .iacw-x { margin-left:auto; background:none; border:none; color:#fff; font-size:20px; cursor:pointer; opacity:.85; }
+  .iacw-msgs { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; background:#f4f6fb; }
+  .iacw-row { display:flex; }
+  .iacw-row.iacw-user { justify-content:flex-end; }
+  .iacw-b { max-width:80%; padding:9px 13px; border-radius:14px; font-size:14px; line-height:1.45;
+    white-space:pre-wrap; word-wrap:break-word; color:#1c2536; }
+  .iacw-row.iacw-ai .iacw-b { background:#fff; border-bottom-left-radius:4px; }
+  .iacw-row.iacw-user .iacw-b { background:#2f5fd0; color:#fff; border-bottom-right-radius:4px; }
+  .iacw-typing .iacw-b span { display:inline-block; width:6px; height:6px; margin:0 1px; background:#7a869a;
+    border-radius:50%; opacity:.4; animation:iacwblink 1.2s infinite both; }
+  .iacw-typing .iacw-b span:nth-child(2){animation-delay:.2s;} .iacw-typing .iacw-b span:nth-child(3){animation-delay:.4s;}
+  @keyframes iacwblink {0%,80%,100%{opacity:.3;}40%{opacity:1;}}
+  .iacw-compose { display:flex; gap:8px; padding:10px; border-top:1px solid #e4e8f0; background:#fff; }
+  .iacw-compose input { flex:1; border:1px solid #e4e8f0; border-radius:20px; padding:10px 14px; font-size:14px; outline:none; }
+  .iacw-compose input:focus { border-color:#2f5fd0; }
+  .iacw-compose button { border:none; background:#2f5fd0; color:#fff; width:40px; height:40px; border-radius:50%;
+    font-size:16px; cursor:pointer; flex-shrink:0; }
+  .iacw-compose button:disabled { opacity:.5; cursor:default; }
+</style>
+
+<button id="iacw-launch" title="Chat with us">💬</button>
+<div id="iacw-panel" role="dialog" aria-label="Chat">
+  <div class="iacw-header">
+    <div class="iacw-av">💬</div>
+    <div>
+      <h4>Integrity Air Conditioning &amp; Heating</h4>
+      <div class="iacw-sub">We typically reply instantly</div>
+    </div>
+    <button class="iacw-x" id="iacw-close" title="Close">×</button>
+  </div>
+  <div class="iacw-msgs" id="iacw-msgs"></div>
+  <div class="iacw-compose">
+    <input id="iacw-input" type="text" placeholder="Ask about our services, hours, or book a visit…" autocomplete="off" />
+    <button id="iacw-send" title="Send">➤</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  // ===== SET THIS to your public HTTPS backend URL =====
+  var API_BASE = "https://your-app.onrender.com";
+  // =====================================================
+
+  var panel = document.getElementById("iacw-panel");
+  var launch = document.getElementById("iacw-launch");
+  var msgsEl = document.getElementById("iacw-msgs");
+  var inputEl = document.getElementById("iacw-input");
+  var sendEl = document.getElementById("iacw-send");
+  var greeted = false;
+
+  var sessionId = localStorage.getItem("iacw_session");
+  if (!sessionId) {
+    sessionId = (window.crypto && crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()).replace(/-/g, "");
+    localStorage.setItem("iacw_session", sessionId);
+  }
+
+  function bubble(text, who) {
+    var row = document.createElement("div");
+    row.className = "iacw-row iacw-" + who;
+    var b = document.createElement("div");
+    b.className = "iacw-b";
+    b.textContent = text;
+    row.appendChild(b);
+    msgsEl.appendChild(row);
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+    return row;
+  }
+  function typing(on) {
+    var ex = document.getElementById("iacw-typing");
+    if (on && !ex) {
+      var row = document.createElement("div");
+      row.id = "iacw-typing";
+      row.className = "iacw-row iacw-ai iacw-typing";
+      row.innerHTML = '<div class="iacw-b"><span></span><span></span><span></span></div>';
+      msgsEl.appendChild(row);
+      msgsEl.scrollTop = msgsEl.scrollHeight;
+    } else if (!on && ex) { ex.remove(); }
+  }
+
+  function openPanel() {
+    panel.classList.add("iacw-open");
+    if (!greeted) {
+      bubble("Hi! I'm the virtual assistant for Integrity Air Conditioning & Heating. How can I help — service questions, hours, or scheduling a visit?", "ai");
+      greeted = true;
+    }
+    inputEl.focus();
+  }
+  function closePanel() { panel.classList.remove("iacw-open"); }
+
+  async function send() {
+    var text = inputEl.value.trim();
+    if (!text) return;
+    inputEl.value = "";
+    sendEl.disabled = true;
+    bubble(text, "user");
+    typing(true);
+    try {
+      var res = await fetch(API_BASE + "/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
+        body: JSON.stringify({ session_id: sessionId, message: text })
+      });
+      var data = await res.json();
+      typing(false);
+      if (data.session_id) { sessionId = data.session_id; localStorage.setItem("iacw_session", sessionId); }
+      bubble(data.reply || "Sorry, something went wrong. Please try again.", "ai");
+    } catch (e) {
+      typing(false);
+      bubble("Network error — please try again in a moment.", "ai");
+    } finally {
+      sendEl.disabled = false;
+      inputEl.focus();
+    }
+  }
+
+  launch.addEventListener("click", function () {
+    panel.classList.contains("iacw-open") ? closePanel() : openPanel();
+  });
+  document.getElementById("iacw-close").addEventListener("click", closePanel);
+  sendEl.addEventListener("click", send);
+  inputEl.addEventListener("keydown", function (e) { if (e.key === "Enter") send(); });
+})();
+</script>
